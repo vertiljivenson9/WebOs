@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
 import { Window } from './Window';
 import { Taskbar } from './Taskbar';
 import { StartMenu } from './StartMenu';
@@ -6,20 +6,39 @@ import { useWebOSStore, windowActions } from '@/store';
 import { useWindows } from '@/hooks/useWindows';
 import type { AppDefinition } from '@/types';
 
-// Import all apps
-import { Explorer } from '@/apps/Explorer';
-import { Notepad } from '@/apps/Notepad';
-import { Calculator } from '@/apps/Calculator';
-import { Terminal } from '@/apps/Terminal';
-import { Paint } from '@/apps/Paint';
-import { Settings } from '@/apps/Settings';
-import { Browser } from '@/apps/Browser';
-import { TaskManager } from '@/apps/TaskManager';
-import { MediaPlayer } from '@/apps/MediaPlayer';
-import { AppStore } from '@/apps/AppStore';
-import { IDE } from '@/apps/IDE';
+// Lazy loading de apps (mejora 3)
+const Explorer = lazy(() => import('@/apps/Explorer'));
+const Notepad = lazy(() => import('@/apps/Notepad'));
+const Calculator = lazy(() => import('@/apps/Calculator'));
+const Terminal = lazy(() => import('@/apps/Terminal'));
+const Paint = lazy(() => import('@/apps/Paint'));
+const Settings = lazy(() => import('@/apps/Settings'));
+const Browser = lazy(() => import('@/apps/Browser'));
+const TaskManager = lazy(() => import('@/apps/TaskManager'));
+const MediaPlayer = lazy(() => import('@/apps/MediaPlayer'));
+const AppStore = lazy(() => import('@/apps/AppStore'));
+const IDE = lazy(() => import('@/apps/IDE'));
 
-// Register all apps
+// Skeleton loader para ventanas (mejora 3)
+const WindowSkeleton = () => (
+  <div className="w-full h-full bg-[#1e1e2e] animate-pulse">
+    <div className="h-8 bg-[#2d2d3a] m-1 rounded" />
+    <div className="grid grid-cols-3 gap-2 p-4">
+      <div className="h-20 bg-[#2d2d3a] rounded" />
+      <div className="h-20 bg-[#2d2d3a] rounded" />
+      <div className="h-20 bg-[#2d2d3a] rounded" />
+    </div>
+  </div>
+);
+
+// Sistema de plugins (mejora 10) - simplificado por ahora
+interface Plugin {
+  id: string;
+  name: string;
+  icon: string;
+  component: React.LazyExoticComponent<React.ComponentType<any>>;
+}
+
 const systemApps: AppDefinition[] = [
   { id: 'explorer', name: 'Explorador', title: 'Explorador de archivos', icon: '📁', category: 'system', defaultWidth: 900, defaultHeight: 600, minWidth: 320, minHeight: 300, isResizable: true },
   { id: 'notepad', name: 'Bloc de notas', title: 'Bloc de notas', icon: '📝', category: 'system', defaultWidth: 700, defaultHeight: 500, minWidth: 280, minHeight: 200, isResizable: true },
@@ -34,7 +53,9 @@ const systemApps: AppDefinition[] = [
   { id: 'ide', name: 'WebOS IDE', title: 'WebOS IDE', icon: '💻', category: 'development', defaultWidth: 1200, defaultHeight: 800, minWidth: 350, minHeight: 400, singleton: true, isResizable: true },
 ];
 
-// Desktop icons - organizados en grid responsivo
+// Plugins instalados (se llenaría desde la store)
+const installedPlugins: Plugin[] = []; // De momento vacío
+
 const desktopIcons = [
   { appId: 'ide', name: 'WebOS IDE', icon: '💻' },
   { appId: 'explorer', name: 'Explorador', icon: '📁' },
@@ -49,10 +70,43 @@ const desktopIcons = [
   { appId: 'store', name: 'Tienda', icon: '🏪' },
 ];
 
-// Detectar si es dispositivo táctil
-const isTouchDevice = () => {
-  return 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-};
+const isTouchDevice = () => 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+
+// Mejora 1: Memoización del renderizado de ventanas
+const WindowsRenderer = React.memo(({ windows }: { windows: ReturnType<typeof useWindows> }) => (
+  <>
+    {windows.map(windowState => (
+      <Window key={windowState.id} windowState={windowState}>
+        <Suspense fallback={<WindowSkeleton />}>
+          {(() => {
+            switch (windowState.appId) {
+              case 'explorer': return <Explorer />;
+              case 'notepad': return <Notepad />;
+              case 'calculator': return <Calculator />;
+              case 'terminal': return <Terminal />;
+              case 'paint': return <Paint />;
+              case 'settings': return <Settings />;
+              case 'browser': return <Browser />;
+              case 'taskmgr': return <TaskManager />;
+              case 'player': return <MediaPlayer />;
+              case 'store': return <AppStore />;
+              case 'ide': return <IDE />;
+              default: {
+                // Buscar en plugins
+                const plugin = installedPlugins.find(p => p.id === windowState.appId);
+                if (plugin) {
+                  const PluginComponent = plugin.component;
+                  return <PluginComponent />;
+                }
+                return <div className="p-4 text-gray-400">Aplicación no encontrada</div>;
+              }
+            }
+          })()}
+        </Suspense>
+      </Window>
+    ))}
+  </>
+));
 
 export const Desktop: React.FC = () => {
   const windows = useWindows();
@@ -63,20 +117,42 @@ export const Desktop: React.FC = () => {
 
   // Detectar tamaño de pantalla
   useEffect(() => {
-    const checkMobile = () => {
-      setIsMobile(window.innerWidth < 640);
-    };
+    const checkMobile = () => setIsMobile(window.innerWidth < 640);
     checkMobile();
     window.addEventListener('resize', checkMobile);
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
 
-  // Register all system apps
+  // Registrar apps del sistema
   useEffect(() => {
     systemApps.forEach(app => registerApp(app));
   }, [registerApp]);
 
-  // Close context menu on click outside
+  // Mejora 5: Atajos de teclado globales
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.key === 'n') {
+        e.preventDefault();
+        windowActions.openApp('notepad');
+      }
+      if (e.ctrlKey && e.shiftKey && e.key === 't') {
+        e.preventDefault();
+        windowActions.openApp('terminal');
+      }
+      if (e.key === 'Escape' && startMenuOpen) {
+        setStartMenuOpen(false);
+      }
+      // Win + E para abrir explorador
+      if (e.key === 'e' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        windowActions.openApp('explorer');
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [startMenuOpen, setStartMenuOpen]);
+
+  // Cerrar menú contextual al hacer clic fuera
   useEffect(() => {
     const handleClick = () => setContextMenu(prev => ({ ...prev, visible: false }));
     window.addEventListener('click', handleClick);
@@ -88,9 +164,8 @@ export const Desktop: React.FC = () => {
     setContextMenu({ x: e.clientX, y: e.clientY, visible: true });
   }, []);
 
-  const handleIconClick = (appId: string) => {
+  const handleIconClick = useCallback((appId: string) => {
     if (isTouchDevice()) {
-      // En dispositivos táctiles: un tap selecciona, doble tap abre
       if (selectedIcon === appId) {
         windowActions.openApp(appId);
         setSelectedIcon(null);
@@ -100,30 +175,13 @@ export const Desktop: React.FC = () => {
     } else {
       setSelectedIcon(appId);
     }
-  };
+  }, [selectedIcon]);
 
-  const handleIconDoubleClick = (appId: string) => {
+  const handleIconDoubleClick = useCallback((appId: string) => {
     windowActions.openApp(appId);
-  };
+  }, []);
 
-  const renderApp = (appId: string) => {
-    switch (appId) {
-      case 'explorer': return <Explorer />;
-      case 'notepad': return <Notepad />;
-      case 'calculator': return <Calculator />;
-      case 'terminal': return <Terminal />;
-      case 'paint': return <Paint />;
-      case 'settings': return <Settings />;
-      case 'browser': return <Browser />;
-      case 'taskmgr': return <TaskManager />;
-      case 'player': return <MediaPlayer />;
-      case 'store': return <AppStore />;
-      case 'ide': return <IDE />;
-      default: return <div className="p-4 text-gray-400">Aplicación no encontrada</div>;
-    }
-  };
-
-  const getWallpaperStyle = () => {
+  const wallpaperStyle = useMemo(() => {
     const wallpapers: Record<string, string> = {
       'gradient-1': 'linear-gradient(135deg, #1a1a2e 0%, #16213e 30%, #0f3460 60%, #533483 100%)',
       'gradient-2': 'linear-gradient(135deg, #0f2027, #203a43, #2c5364)',
@@ -133,15 +191,15 @@ export const Desktop: React.FC = () => {
       'gradient-6': 'linear-gradient(135deg, #141e30, #243b55)',
     };
     return { background: wallpapers[settings.wallpaper] || wallpapers['gradient-1'] };
-  };
+  }, [settings.wallpaper]);
 
   return (
     <div 
       className="fixed inset-0 overflow-hidden"
-      style={getWallpaperStyle()}
+      style={wallpaperStyle}
       onContextMenu={handleDesktopContextMenu}
     >
-      {/* Desktop Icons - Grid responsivo */}
+      {/* Desktop Icons */}
       <div className={`
         absolute top-4 left-4 right-4 
         grid gap-2
@@ -174,16 +232,8 @@ export const Desktop: React.FC = () => {
         ))}
       </div>
 
-      {/* Windows */}
-      <div className="absolute inset-0 pointer-events-none">
-        {windows.map(windowState => (
-          <div key={windowState.id} className="pointer-events-auto">
-            <Window windowState={windowState}>
-              {renderApp(windowState.appId)}
-            </Window>
-          </div>
-        ))}
-      </div>
+      {/* Windows memoizadas */}
+      <WindowsRenderer windows={windows} />
 
       {/* Start Menu */}
       {startMenuOpen && <StartMenu onClose={() => setStartMenuOpen(false)} />}
@@ -191,47 +241,26 @@ export const Desktop: React.FC = () => {
       {/* Taskbar */}
       <Taskbar />
 
-      {/* Desktop Context Menu */}
+      {/* Context Menu */}
       {contextMenu.visible && (
         <div 
           className="fixed bg-[#2a2a3a] border border-white/10 rounded-lg shadow-xl py-2 z-[99999] min-w-[200px]"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
-          <button 
-            onClick={() => {
-              windowActions.openApp('ide');
-            }}
-            className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-white/10 flex items-center gap-2"
-          >
+          <button onClick={() => windowActions.openApp('ide')} className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-white/10 flex items-center gap-2">
             <span>💻</span> Abrir IDE
           </button>
-          <button 
-            onClick={() => {
-              windowActions.openApp('notepad');
-            }}
-            className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-white/10 flex items-center gap-2"
-          >
+          <button onClick={() => windowActions.openApp('notepad')} className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-white/10 flex items-center gap-2">
             <span>📄</span> Nuevo documento
           </button>
-          <button 
-            onClick={() => {
-              windowActions.openApp('terminal');
-            }}
-            className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-white/10 flex items-center gap-2"
-          >
+          <button onClick={() => windowActions.openApp('terminal')} className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-white/10 flex items-center gap-2">
             <span>💻</span> Abrir terminal aquí
           </button>
           <div className="h-px bg-white/10 my-1" />
-          <button 
-            onClick={() => windowActions.openApp('settings')}
-            className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-white/10 flex items-center gap-2"
-          >
+          <button onClick={() => windowActions.openApp('settings')} className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-white/10 flex items-center gap-2">
             <span>⚙️</span> Configuración de pantalla
           </button>
-          <button 
-            onClick={() => window.location.reload()}
-            className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-white/10 flex items-center gap-2"
-          >
+          <button onClick={() => window.location.reload()} className="w-full px-4 py-2 text-left text-sm text-gray-300 hover:bg-white/10 flex items-center gap-2">
             <span>↻</span> Actualizar
           </button>
         </div>
